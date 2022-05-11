@@ -5,21 +5,27 @@ import { Dictionary, serializeDictionary } from 'structured-headers';
 import { setTimeout } from 'timers/promises';
 import uuid from 'uuid/v4';
 
+import * as Platform from './utils/platform';
 import * as Server from './utils/server';
+import * as Setup from './utils/setup';
 import * as Simulator from './utils/simulator';
 import { copyBundleToStaticFolder } from './utils/update';
 
 const SERVER_HOST = process.env.UPDATES_HOST;
 const SERVER_PORT = parseInt(process.env.UPDATES_PORT, 10);
+const ARTIFACTS_DEST = process.env.ARTIFACTS_DEST;
 
-// Keep in sync with the manifest in .github/workflows/updates-e2e.yml
 const RUNTIME_VERSION = '1.0.0';
 
 const TIMEOUT_BIAS = process.env.CI ? 10 : 1;
 
+let projectRoot: string | null = null;
+let updateDistPath: string | null = null;
+let codeSigningPrivateKeyPath: string | null = null;
+let plainTestAppPath: string | null = null;
+
 async function getPrivateKeyAsync() {
-  const privateKeyPath = process.env.TEST_PRIVATE_KEY_PATH;
-  const pemBuffer = fs.readFileSync(path.resolve(privateKeyPath));
+  const pemBuffer = fs.readFileSync(path.resolve(codeSigningPrivateKeyPath));
   return pemBuffer.toString('utf8');
 }
 
@@ -50,6 +56,23 @@ async function serveUpdateWithManifest(manifest: any) {
   Server.serveManifest(manifest, { 'expo-protocol-version': '0', 'expo-signature': signature });
 }
 
+beforeAll(async () => {
+  const repoRoot = process.env.EXPO_REPO_ROOT;
+  if (!repoRoot) {
+    throw new Error(
+      'You must provide the path to the repo root in the EXPO_REPO_ROOT environment variable'
+    );
+  }
+  projectRoot = process.env.TEST_PROJECT_ROOT;
+  if (!projectRoot) {
+    projectRoot = await Setup.setupAsync(path.resolve(repoRoot, '..'), repoRoot, RUNTIME_VERSION);
+  }
+  updateDistPath = path.join(projectRoot, 'dist');
+  codeSigningPrivateKeyPath = path.join(projectRoot, 'keys', 'private-key.pem');
+  // build a plain test app with the default settings
+  plainTestAppPath = await Platform.buildAsync(projectRoot, ARTIFACTS_DEST);
+});
+
 beforeEach(async () => {});
 
 afterEach(async () => {
@@ -60,7 +83,7 @@ afterEach(async () => {
 test('starts app, stops, and starts again', async () => {
   jest.setTimeout(300000 * TIMEOUT_BIAS);
   Server.start(SERVER_PORT);
-  await Simulator.installApp();
+  await Simulator.installApp(plainTestAppPath);
   await Simulator.startApp();
   const response = await Server.waitForResponse(10000 * TIMEOUT_BIAS);
   expect(response).toBe('test');
@@ -78,7 +101,7 @@ test('starts app, stops, and starts again', async () => {
 test('initial request includes correct update-id headers', async () => {
   jest.setTimeout(300000 * TIMEOUT_BIAS);
   Server.start(SERVER_PORT);
-  await Simulator.installApp();
+  await Simulator.installApp(plainTestAppPath);
   await Simulator.startApp();
   const request = await Server.waitForUpdateRequest(10000 * TIMEOUT_BIAS);
   expect(request.headers['expo-embedded-update-id']).toBeDefined();
@@ -93,7 +116,7 @@ test('downloads and runs update, and updates current-update-id header', async ()
   jest.setTimeout(300000 * TIMEOUT_BIAS);
   const bundleFilename = 'bundle1.js';
   const newNotifyString = 'test-update-1';
-  const hash = await copyBundleToStaticFolder(bundleFilename, newNotifyString);
+  const hash = await copyBundleToStaticFolder(updateDistPath, bundleFilename, newNotifyString);
   const manifest = {
     id: uuid(),
     createdAt: new Date().toISOString(),
@@ -111,7 +134,7 @@ test('downloads and runs update, and updates current-update-id header', async ()
 
   Server.start(SERVER_PORT);
   await serveUpdateWithManifest(manifest);
-  await Simulator.installApp();
+  await Simulator.installApp(plainTestAppPath);
   await Simulator.startApp();
   const firstRequest = await Server.waitForUpdateRequest(10000 * TIMEOUT_BIAS);
   const response = await Server.waitForResponse(10000 * TIMEOUT_BIAS);
@@ -140,7 +163,7 @@ test('downloads and runs update, and updates current-update-id header', async ()
 test('does not download any assets for an older update', async () => {
   jest.setTimeout(300000 * TIMEOUT_BIAS);
   const bundleFilename = 'bundle-old.js';
-  const hash = await copyBundleToStaticFolder(bundleFilename, 'test-update-older');
+  const hash = await copyBundleToStaticFolder(updateDistPath, bundleFilename, 'test-update-older');
   const manifest = {
     id: uuid(),
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(), // yesterday
@@ -158,7 +181,7 @@ test('does not download any assets for an older update', async () => {
 
   Server.start(SERVER_PORT);
   await serveUpdateWithManifest(manifest);
-  await Simulator.installApp();
+  await Simulator.installApp(plainTestAppPath);
   await Simulator.startApp();
   await Server.waitForUpdateRequest(10000 * TIMEOUT_BIAS);
   const firstResponse = await Server.waitForResponse(10000 * TIMEOUT_BIAS);

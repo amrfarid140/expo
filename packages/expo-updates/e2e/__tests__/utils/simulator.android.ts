@@ -18,14 +18,13 @@ const ADB_PATH = (function () {
   return 'adb';
 })();
 
-const APK_PATH = process.env.TEST_APK_PATH;
 const PACKAGE_NAME = 'dev.expo.updatese2e';
 const ACTIVITY_NAME = `${PACKAGE_NAME}/${PACKAGE_NAME}.MainActivity`;
 
 export const ExportedManifestFilename = 'android-index.json';
 
-export async function installApp() {
-  await spawnAsync(ADB_PATH, ['install', APK_PATH]);
+export async function installApp(path: string) {
+  await spawnAsync(ADB_PATH, ['install', path]);
 }
 
 export async function uninstallApp() {
